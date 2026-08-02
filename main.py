@@ -67,6 +67,8 @@ class Room:
         self.practice_mode = False                            # 练习模式（含 Bot）
         self.paused = False                                   # 暂停状态
         self.paused_by: Optional[str] = None                  # 谁暂停的
+        self.waiting_confirm = False                          # 等待三家确认开始下一轮
+        self.confirm_seats: set = set()                       # 已确认的座位
         self.add_player(host_name, host_ws)
 
     def add_player(self, name: str, ws: WebSocket) -> Optional[int]:
@@ -291,6 +293,8 @@ def player_view(room: Room, seat: int) -> Dict[str, Any]:
         "practice": room.practice_mode,     # 练习模式标记
         "paused": room.paused,              # 暂停状态
         "paused_by": room.paused_by,
+        "waiting_confirm": room.waiting_confirm,   # 等待三家确认
+        "confirm_seats": list(room.confirm_seats), # 已确认座位
     }
     if room.started and room.game.round:
         r: gl.Round = room.game.round
@@ -368,6 +372,21 @@ async def handle_message(room: Room, seat: int, msg: Dict[str, Any]) -> Optional
                 room.schedule_turn_timer()
         return None
 
+    if mtype == "confirm_next":
+        if not room.waiting_confirm:
+            return {"type": "error", "message": "当前不在确认阶段"}
+        if room.paused:
+            return {"type": "error", "message": "游戏已暂停，无法确认"}
+        async with room.lock:
+            if seat not in room.confirm_seats:
+                room.confirm_seats.add(seat)
+            await _broadcast_confirm(room)
+            # 三家都确认（真人+Bot）→ 开下一轮
+            human_seats = {s for s, p in room.players.items() if not p.is_bot}
+            if room.confirm_seats.issuperset(human_seats):
+                await start_next_round(room)
+        return None
+
     if mtype == "pause":
         if room.paused:
             return {"type": "error", "message": "游戏已处于暂停状态"}
@@ -437,8 +456,8 @@ async def handle_message(room: Room, seat: int, msg: Dict[str, Any]) -> Optional
 async def finish_round(room: Room, r: gl.Round):
     result = room.game.finish_round()
     await broadcast(room, {"type": "round_result", "data": result})
-    await asyncio.sleep(ROUND_RESULT_PAUSE)
 
+    # 最后一大局：直接全局结算，不需要确认
     if room.game.is_over:
         ranking = room.game.compute_ranking()
         await broadcast(room, {
@@ -447,6 +466,29 @@ async def finish_round(room: Room, r: gl.Round):
         })
         return
 
+    # 进入等待三家确认状态
+    room.waiting_confirm = True
+    room.confirm_seats = set()
+    # 练习模式：Bot 自动确认
+    for s, p in room.players.items():
+        if p.is_bot:
+            room.confirm_seats.add(s)
+    await _broadcast_confirm(room)
+
+
+async def _broadcast_confirm(room: Room):
+    """广播三家确认状态。"""
+    await broadcast(room, {
+        "type": "round_confirm",
+        "data": {"waiting": room.waiting_confirm, "confirmed": list(room.confirm_seats)},
+    })
+    await send_view(room)
+
+
+async def start_next_round(room: Room):
+    """三家确认后开下一轮。"""
+    room.waiting_confirm = False
+    room.confirm_seats = set()
     first = room.game.next_first_seat()
     room.game.start_round(first)
     await broadcast(room, {"type": "notice", "message": f"第 {room.game.round_no} 小轮开始"})
