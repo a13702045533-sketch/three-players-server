@@ -231,7 +231,14 @@ class Room:
                             ok, _ = r.pass_(seat)
                 if ok:
                     await send_view(self)
-                    # 若 Bot 出完牌赢了一轮 → 结算
+                    # 兜底检查：任何玩家手牌为0且winner未设 → 强制结算
+                    if r.winner is None:
+                        for s in range(3):
+                            if not r.hands[s]:
+                                r.winner = s
+                                print(f"[SAFETY] 座位{s}手牌空，强制设为winner", file=sys.stderr, flush=True)
+                                break
+                    # 若有人赢了一轮 → 结算
                     if r.winner is not None:
                         self.cancel_turn_timer()
                         await finish_round(self, r)
@@ -462,6 +469,8 @@ async def handle_message(room: Room, seat: int, msg: Dict[str, Any]) -> Optional
 
 
 async def finish_round(room: Room, r: gl.Round):
+    import sys
+    print(f"[FINISH] 结算触发! winner={r.winner} 手牌={[len(r.hands[s]) for s in range(3)]}", file=sys.stderr, flush=True)
     result = room.game.finish_round()
     await broadcast(room, {"type": "round_result", "data": result})
 
