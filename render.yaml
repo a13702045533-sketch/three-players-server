@@ -1,0 +1,11 @@
+# Render 自动部署配置（Blueprint）
+# 有这个文件，Render 会自动填好所有设置，无需手动配置
+services:
+  - type: web
+    name: three-players-server
+    runtime: python
+    plan: free
+    autoDeploy: true
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /
