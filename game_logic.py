@@ -283,12 +283,15 @@ class Round:
             self.hands[s] = sort_cards(self.hands[s])
 
     def _draw_all(self):
-        """全体补 1 张底牌（底牌耗尽则不再补）。"""
+        """全体补 1 张底牌（底牌耗尽则不再补）。
+        已出完牌（0张）的玩家不再补牌，且应已判定为赢家。"""
         if not self.pile:
             return
         for seat in range(3):
-            if self.pile:
-                self.hands[seat].append(self.pile.pop())
+            # 手牌已空（赢了）的玩家跳过补牌
+            if self.hands[seat]:
+                if self.pile:
+                    self.hands[seat].append(self.pile.pop())
         for s in range(3):
             self.hands[s] = sort_cards(self.hands[s])
 
