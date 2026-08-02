@@ -39,12 +39,13 @@ TURN_TIMEOUT_S = 60           # 出牌超时：60 秒不出自动操作
 # ---------------------------------------------------------------------------
 
 class Player:
-    def __init__(self, seat: int, name: str, ws: WebSocket):
+    def __init__(self, seat: int, name: str, ws: WebSocket, is_bot: bool = False):
         self.seat = seat
         self.name = name
         self.player_id: str = "".join(random.choices(string.ascii_letters + string.digits, k=16))
         self.ws = ws
         self.connected = True
+        self.is_bot = is_bot
 
 
 class Room:
@@ -63,6 +64,7 @@ class Room:
         self.turn_timer_task: Optional[asyncio.Task] = None   # 出牌超时定时器
         self.turn_timeout_s = TURN_TIMEOUT_S                  # 60秒不出视为过牌
         self.dice_order: Optional[list] = None                # 掷骰子结果（先手顺序）
+        self.practice_mode = False                            # 练习模式（含 Bot）
         self.add_player(host_name, host_ws)
 
     def add_player(self, name: str, ws: WebSocket) -> Optional[int]:
@@ -72,6 +74,17 @@ class Room:
         seat = self._next_seat
         self._next_seat += 1
         p = Player(seat, name, ws)
+        self.players[seat] = p
+        self.order.append(seat)
+        return seat
+
+    def add_bot(self, name: str) -> Optional[int]:
+        """添加 Bot 玩家（无 WebSocket 连接）。"""
+        if len(self.players) >= 3:
+            return None
+        seat = self._next_seat
+        self._next_seat += 1
+        p = Player(seat, name, None, is_bot=True)
         self.players[seat] = p
         self.order.append(seat)
         return seat
@@ -155,7 +168,7 @@ class Room:
         except Exception:
             traceback.print_exc()
 
-    # ---- 出牌超时：60秒不出牌自动过牌 ----
+    # ---- 出牌超时 / Bot 调度 ----
 
     def cancel_turn_timer(self):
         """取消当前出牌超时定时器。"""
@@ -164,17 +177,23 @@ class Room:
         self.turn_timer_task = None
 
     def schedule_turn_timer(self):
-        """为当前轮到的玩家启动超时定时器。"""
+        """为当前轮到的玩家启动定时器。
+        - 真人：超时自动操作（60秒）
+        - Bot：短延迟后走 AI 决策（2秒，模拟思考）
+        """
         self.cancel_turn_timer()
         self.turn_timer_task = asyncio.ensure_future(self._turn_timer())
 
     async def _turn_timer(self):
-        """倒计时，超时后自动操作当前玩家：
-        - 非先手（桌面有牌）→ 自动过牌
-        - 先手（桌面无牌）→ 自动出最小单张
-        """
+        """定时器触发：Bot 走 AI 决策；真人超时自动操作。"""
+        # 判断当前玩家是不是 Bot，决定等待时长
+        if not self.started or not self.game.round:
+            return
+        current_player = self.players.get(self.game.round.current_seat)
+        is_bot = current_player is not None and current_player.is_bot
+        delay = 2 if is_bot else self.turn_timeout_s
         try:
-            await asyncio.sleep(self.turn_timeout_s)
+            await asyncio.sleep(delay)
         except asyncio.CancelledError:
             return
         if not self.started or not self.game.round:
@@ -188,24 +207,46 @@ class Room:
                 return
             seat = r.current_seat
             try:
-                await broadcast(self, {"type": "notice",
-                                       "message": f"座位{seat}超过{self.turn_timeout_s}秒未出牌，自动操作"})
-                ok = False
-                if r.current_play is not None:
-                    # 非先手：自动过牌
-                    ok, err = r.pass_(seat)
+                if is_bot:
+                    # Bot：调用 AI 决策出牌
+                    ok = await self._bot_act(seat, r)
+                    if not ok:
+                        # AI 决策失败则过牌
+                        ok, _ = r.pass_(seat)
                 else:
-                    # 先手：自动出最小单张（防止先手挂机卡局）
-                    hand = r.hands[seat]
-                    if hand:
-                        ok, err = r.play(seat, [hand[0]])
+                    # 真人：超时自动操作
+                    await broadcast(self, {"type": "notice",
+                                           "message": f"座位{seat}超过{self.turn_timeout_s}秒未出牌，自动操作"})
+                    if r.current_play is not None:
+                        ok, _ = r.pass_(seat)
                     else:
-                        ok, err = r.pass_(seat)
+                        hand = r.hands[seat]
+                        if hand:
+                            ok, _ = r.play(seat, [hand[0]])
+                        else:
+                            ok, _ = r.pass_(seat)
                 if ok:
                     await send_view(self)
                     self.schedule_turn_timer()
             except Exception:
                 traceback.print_exc()
+
+    async def _bot_act(self, seat: int, r) -> bool:
+        """Bot 决策出牌。返回是否成功执行了操作。"""
+        import bot_ai
+        hand = r.hands[seat]
+        if not hand:
+            ok, _ = r.pass_(seat)
+            return ok
+        current_play = r.current_play
+        opp_hands = [len(r.hands[s]) for s in range(3) if s != seat]
+        move = bot_ai.decide_move(hand, current_play, opp_hands, seat)
+        if move:
+            ok, _ = r.play(seat, move)
+            return ok
+        # 过牌
+        ok, _ = r.pass_(seat)
+        return ok
 
 
 # ---------------------------------------------------------------------------
@@ -232,7 +273,7 @@ def card_list_for_send(cards: List[Dict]) -> List[Dict]:
 def player_view(room: Room, seat: int) -> Dict[str, Any]:
     others = {}
     for s, p in room.players.items():
-        others[s] = {"name": p.name, "connected": p.connected}
+        others[s] = {"name": p.name, "connected": p.connected, "is_bot": p.is_bot}
     base = {
         "code": room.code,
         "started": room.started,
@@ -245,6 +286,7 @@ def player_view(room: Room, seat: int) -> Dict[str, Any]:
         "finished": room.game.is_over,
         "auto_starting": bool(room.auto_start_task and not room.auto_start_task.done()),
         "dice_order": room.dice_order,      # 掷骰子结果（先手顺序）
+        "practice": room.practice_mode,     # 练习模式标记
     }
     if room.started and room.game.round:
         r: gl.Round = room.game.round
@@ -266,6 +308,8 @@ def player_view(room: Room, seat: int) -> Dict[str, Any]:
 
 async def send_view(room: Room):
     for s, p in room.players.items():
+        if p.ws is None or p.is_bot:
+            continue   # 跳过 Bot（无连接）
         try:
             await p.ws.send_json({"type": "state", "data": player_view(room, s)})
         except Exception:
@@ -276,6 +320,8 @@ async def broadcast(room: Room, message: Dict[str, Any], except_seat: Optional[i
     for seat, p in list(room.players.items()):
         if seat == except_seat:
             continue
+        if p.ws is None or p.is_bot:
+            continue   # 跳过 Bot（无连接）
         try:
             await p.ws.send_json(message)
         except Exception:
@@ -481,6 +527,30 @@ async def ws_create(ws: WebSocket, name: str):
     await ws.send_json({"type": "room_created",
                         "data": {"code": code, "player_id": room.players[0].player_id}})
     await send_view(room)
+    await _player_loop(room, room.host_seat, name, ws)
+
+
+@app.websocket("/ws/practice")
+async def ws_practice(ws: WebSocket, name: str):
+    """创建练习房间：1 真人 + 2 个电脑 Bot。"""
+    await ws.accept()
+    code = gen_room_code()
+    room = Room(code, name, ws)
+    # 补 2 个 Bot
+    room.add_bot("电脑1")
+    room.add_bot("电脑2")
+    room.practice_mode = True
+    ROOMS[code] = room
+    await ws.send_json({"type": "room_created",
+                        "data": {"code": code, "player_id": room.players[0].player_id,
+                                 "practice": True}})
+    await send_view(room)
+    # 练习房间自动开局（无需等3人齐）
+    if room.is_full:
+        room.start_game()
+        await broadcast(room, {"type": "notice", "message": "练习模式开始！对战两个电脑"})
+        await send_view(room)
+        room.schedule_turn_timer()
     await _player_loop(room, room.host_seat, name, ws)
 
 
