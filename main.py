@@ -65,6 +65,8 @@ class Room:
         self.turn_timeout_s = TURN_TIMEOUT_S                  # 60秒不出视为过牌
         self.dice_order: Optional[list] = None                # 掷骰子结果（先手顺序）
         self.practice_mode = False                            # 练习模式（含 Bot）
+        self.paused = False                                   # 暂停状态
+        self.paused_by: Optional[str] = None                  # 谁暂停的
         self.add_player(host_name, host_ws)
 
     def add_player(self, name: str, ws: WebSocket) -> Optional[int]:
@@ -287,6 +289,8 @@ def player_view(room: Room, seat: int) -> Dict[str, Any]:
         "auto_starting": bool(room.auto_start_task and not room.auto_start_task.done()),
         "dice_order": room.dice_order,      # 掷骰子结果（先手顺序）
         "practice": room.practice_mode,     # 练习模式标记
+        "paused": room.paused,              # 暂停状态
+        "paused_by": room.paused_by,
     }
     if room.started and room.game.round:
         r: gl.Round = room.game.round
@@ -362,6 +366,30 @@ async def handle_message(room: Room, seat: int, msg: Dict[str, Any]) -> Optional
                 await broadcast(room, {"type": "notice", "message": "新一局开始！积分已清零"})
                 await send_view(room)
                 room.schedule_turn_timer()
+        return None
+
+    if mtype == "pause":
+        if room.paused:
+            return {"type": "error", "message": "游戏已处于暂停状态"}
+        async with room.lock:
+            room.paused = True
+            room.cancel_turn_timer()   # 暂停所有定时器
+            pname = room.players.get(seat).name if seat in room.players else f"座位{seat}"
+            room.paused_by = pname
+            await broadcast(room, {"type": "paused", "data": {"by": pname}})
+            await send_view(room)
+        return None
+
+    if mtype == "resume":
+        if not room.paused:
+            return {"type": "error", "message": "游戏未处于暂停状态"}
+        async with room.lock:
+            room.paused = False
+            room.paused_by = None
+            await broadcast(room, {"type": "resumed"})
+            await send_view(room)
+            if room.game.round:
+                room.schedule_turn_timer()   # 恢复定时器
         return None
 
     if not room.started or not room.game.round:
