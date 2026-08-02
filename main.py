@@ -245,8 +245,11 @@ class Room:
         import bot_ai
         hand = r.hands[seat]
         if not hand:
-            ok, _ = r.pass_(seat)
-            return ok
+            # Bot 手牌已空：如果是它出完的，应该已经设置 winner
+            # 若 winner 未设（异常情况），视为出完赢
+            if r.winner is None:
+                r.winner = seat
+            return True
         current_play = r.current_play
         opp_hands = [len(r.hands[s]) for s in range(3) if s != seat]
         move = bot_ai.decide_move(hand, current_play, opp_hands, seat)
