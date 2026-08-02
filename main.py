@@ -231,7 +231,12 @@ class Room:
                             ok, _ = r.pass_(seat)
                 if ok:
                     await send_view(self)
-                    self.schedule_turn_timer()
+                    # 若 Bot 出完牌赢了一轮 → 结算
+                    if r.winner is not None:
+                        self.cancel_turn_timer()
+                        await finish_round(self, r)
+                    else:
+                        self.schedule_turn_timer()
             except Exception:
                 traceback.print_exc()
 
