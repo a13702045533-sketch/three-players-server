@@ -473,9 +473,9 @@ async def handle_message(room: Room, seat: int, msg: Dict[str, Any]) -> Optional
 
 
 async def _auto_next_round(room: Room):
-    """结算展示 30 秒后自动开下一轮；confirm_next 可提前取消。"""
+    """结算展示 35 秒后自动开下一轮（服务端兜底，比客户端30秒长5秒）；confirm_next 可提前取消。"""
     try:
-        await asyncio.sleep(30)
+        await asyncio.sleep(35)
         if room.game.is_over or room.paused:
             return
         await start_next_round(room)
