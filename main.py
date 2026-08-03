@@ -487,6 +487,9 @@ async def finish_round(room: Room, r: gl.Round):
     import sys
     print(f"[FINISH] 结算触发! winner={r.winner} 手牌={[len(r.hands[s]) for s in range(3)]}", file=sys.stderr, flush=True)
     result = room.game.finish_round()
+    # 桌面停留 5 秒（让玩家看到手牌为0的瞬间）
+    await asyncio.sleep(5)
+    # 广播结算结果 → 客户端显示黑板
     await broadcast(room, {"type": "round_result", "data": result})
 
     # 最后一大局：直接全局结算，不需要确认
