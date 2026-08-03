@@ -69,6 +69,7 @@ class Room:
         self.paused_by: Optional[str] = None                  # 谁暂停的
         self.waiting_confirm = False                          # 等待三家确认开始下一轮
         self.confirm_seats: set = set()                       # 已确认的座位
+        self.next_round_task: Optional[asyncio.Task] = None   # 自动开下一轮的任务
         self.add_player(host_name, host_ws)
 
     def add_player(self, name: str, ws: WebSocket) -> Optional[int]:
@@ -211,6 +212,8 @@ class Room:
                 return
             seat = r.current_seat
             try:
+                import sys
+                print(f"[T] seat={seat} is_bot={is_bot} hand={len(r.hands[seat]) if seat in r.hands else '?'} winner={r.winner}", file=sys.stderr, flush=True)
                 if is_bot:
                     # Bot：调用 AI 决策出牌
                     ok = await self._bot_act(seat, r)
@@ -388,17 +391,13 @@ async def handle_message(room: Room, seat: int, msg: Dict[str, Any]) -> Optional
         return None
 
     if mtype == "confirm_next":
-        if not room.waiting_confirm:
-            return {"type": "error", "message": "当前不在确认阶段"}
         if room.paused:
             return {"type": "error", "message": "游戏已暂停，无法确认"}
         async with room.lock:
-            if seat not in room.confirm_seats:
-                room.confirm_seats.add(seat)
-            await _broadcast_confirm(room)
-            # 三家都确认（真人+Bot）→ 开下一轮
-            human_seats = {s for s, p in room.players.items() if not p.is_bot}
-            if room.confirm_seats.issuperset(human_seats):
+            # 取消 30 秒自动开下一轮任务，立即开下一轮
+            if room.next_round_task and not room.next_round_task.done():
+                room.next_round_task.cancel()
+            if room.game.round and room.game.round.winner is not None:
                 await start_next_round(room)
         return None
 
@@ -473,6 +472,17 @@ async def handle_message(room: Room, seat: int, msg: Dict[str, Any]) -> Optional
     return {"type": "error", "message": f"未知操作：{mtype}"}
 
 
+async def _auto_next_round(room: Room):
+    """结算展示 30 秒后自动开下一轮；confirm_next 可提前取消。"""
+    try:
+        await asyncio.sleep(30)
+        if room.game.is_over or room.paused:
+            return
+        await start_next_round(room)
+    except asyncio.CancelledError:
+        pass
+
+
 async def finish_round(room: Room, r: gl.Round):
     import sys
     print(f"[FINISH] 结算触发! winner={r.winner} 手牌={[len(r.hands[s]) for s in range(3)]}", file=sys.stderr, flush=True)
@@ -488,14 +498,8 @@ async def finish_round(room: Room, r: gl.Round):
         })
         return
 
-    # 进入等待三家确认状态
-    room.waiting_confirm = True
-    room.confirm_seats = set()
-    # 练习模式：Bot 自动确认
-    for s, p in room.players.items():
-        if p.is_bot:
-            room.confirm_seats.add(s)
-    await _broadcast_confirm(room)
+    # 结算展示 30 秒后自动开始下一轮（confirm_next 可提前触发）
+    room.next_round_task = asyncio.ensure_future(_auto_next_round(room))
 
 
 async def _broadcast_confirm(room: Room):
