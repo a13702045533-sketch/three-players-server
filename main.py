@@ -462,7 +462,12 @@ async def handle_message(room: Room, seat: int, msg: Dict[str, Any]) -> Optional
         if not ok:
             return {"type": "error", "message": err}
         await send_view(room)
-        room.schedule_turn_timer()
+        # 补牌后若检测到 winner → 立即结算
+        if r.winner is not None:
+            room.cancel_turn_timer()
+            await finish_round(room, r)
+        else:
+            room.schedule_turn_timer()
         return None
 
     return {"type": "error", "message": f"未知操作：{mtype}"}
