@@ -489,8 +489,6 @@ async def finish_round(room: Room, r: gl.Round):
     result = room.game.finish_round()
     # 桌面停留 5 秒（让玩家看到手牌为0的瞬间）
     await asyncio.sleep(5)
-    # 广播结算结果 → 客户端显示黑板
-    await broadcast(room, {"type": "round_result", "data": result})
 
     # 最后一大局：直接全局结算，不需要确认
     if room.game.is_over:
@@ -501,8 +499,14 @@ async def finish_round(room: Room, r: gl.Round):
         })
         return
 
-    # 结算展示 30 秒后自动开始下一轮（confirm_next 可提前触发）
+    # 先调度兜底自动开下一轮：即便下方广播异常，也保证一定能进下一轮，绝不会卡死
     room.next_round_task = asyncio.ensure_future(_auto_next_round(room))
+    # 广播结算结果 → 客户端显示黑板
+    try:
+        await broadcast(room, {"type": "round_result", "data": result})
+    except Exception:
+        import traceback as _tb
+        _tb.print_exc()
 
 
 async def _broadcast_confirm(room: Room):
@@ -592,8 +596,9 @@ async def _player_loop(room: Room, seat: int, name: str, ws: WebSocket):
     except WebSocketDisconnect:
         pass
     except Exception:
-        # 连接已关闭或客户端断开：正常结束，无需打印堆栈
-        pass
+        # 连接异常：打印堆栈便于排查（之前静默吞掉会导致“赢了不结算”类卡死无日志）
+        import traceback as _tb
+        _tb.print_exc()
     finally:
         # 仅当该 seat 还对应本连接时才移除（防止重连后误删新连接）
         if room.players.get(seat) is not None and room.players[seat].ws is ws:
