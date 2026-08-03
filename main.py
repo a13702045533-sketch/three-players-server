@@ -343,6 +343,9 @@ async def send_view(room: Room):
 
 
 async def broadcast(room: Room, message: Dict[str, Any], except_seat: Optional[int] = None):
+    import sys as _sys
+    if message.get("type") in ("round_result", "game_over", "state"):
+        print(f"[BC] type={message.get('type')} room={room.code} players={list(room.players.keys())}", file=_sys.stderr, flush=True)
     for seat, p in list(room.players.items()):
         if seat == except_seat:
             continue
@@ -485,10 +488,19 @@ async def _auto_next_round(room: Room):
 
 async def finish_round(room: Room, r: gl.Round):
     import sys
+    print(f"[FINISH] 进入finish_round! winner={r.winner} round_obj={id(r)}", file=sys.stderr, flush=True)
     print(f"[FINISH] 结算触发! winner={r.winner} 手牌={[len(r.hands[s]) for s in range(3)]}", file=sys.stderr, flush=True)
-    result = room.game.finish_round()
+    try:
+        result = room.game.finish_round()
+        print(f"[FINISH] settle完成, is_over={room.game.is_over}", file=sys.stderr, flush=True)
+    except Exception as e:
+        import traceback as _tb
+        print(f"[FINISH] settle异常: {e}", file=sys.stderr, flush=True)
+        _tb.print_exc()
+        raise
     # 桌面停留 5 秒（让玩家看到手牌为0的瞬间）
     await asyncio.sleep(5)
+    print(f"[FINISH] sleep5结束", file=sys.stderr, flush=True)
 
     # 最后一大局：直接全局结算，不需要确认
     if room.game.is_over:
