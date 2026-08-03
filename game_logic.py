@@ -270,11 +270,14 @@ class Round:
     # ---- 发牌 / 补牌 ----
 
     def _deal(self):
-        """发牌：先手抓 6 张，其余玩家抓 5 张（第一小轮）。"""
+        """发牌：第一小轮先手6张/其他5张，后续每小轮每人抓1张。"""
         for seat in range(3):
-            base = 5
-            if self.round_no == 1 and seat == self.first_seat:
-                base = 6                       # 第一小轮先手多抓 1 张
+            if self.round_no == 1:
+                # 第一小轮：先手6张，其他5张
+                base = 6 if seat == self.first_seat else 5
+            else:
+                # 后续每小轮：每人抓1张
+                base = 1
             for _ in range(base):
                 if self.deck:
                     self.hands[seat].append(self.deck.pop())
