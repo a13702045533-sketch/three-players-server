@@ -362,9 +362,20 @@ class Round:
             self.current_play = None
             self.current_play_seat = None
             self.pass_seats = []
+            # 补牌后检测：任何玩家手牌为0且未设winner → 判定胜利
+            self._auto_detect_winner()
         else:
             self.current_seat = (seat + 1) % 3
         return True, None
+
+    def _auto_detect_winner(self):
+        """兜底：任何玩家手牌为0且未设winner → 判定该玩家赢。"""
+        if self.winner is not None:
+            return
+        for s in range(3):
+            if not self.hands[s]:
+                self.winner = s
+                return
 
     # ---- 结算 ----
 
