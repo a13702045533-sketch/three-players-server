@@ -48,7 +48,7 @@ COMBO_CN = {
 # ---------------------------------------------------------------------------
 
 def build_deck() -> List[Dict[str, Any]]:
-    """构建完整 56 张扑克牌（54 张普通牌 + 2 张赖子）。"""
+    """构建完整 55 张扑克牌（54 张普通牌 + 1 张赖子）。"""
     deck: List[Dict[str, Any]] = []
     for rank in CARD_ORDER[:13]:                # 3 ~ 2 各4张
         v = RANK_VALUE[rank]
@@ -57,7 +57,6 @@ def build_deck() -> List[Dict[str, Any]]:
     deck.append({"r": "小王", "s": JOKER_SUIT, "v": RANK_VALUE["小王"]})
     deck.append({"r": "大王", "s": JOKER_SUIT, "v": RANK_VALUE["大王"]})
     deck.append({"r": "赖子", "s": "LZ", "v": RANK_VALUE["赖子"]})  # 1张赖子
-    deck.append({"r": "赖子", "s": "LZ2", "v": RANK_VALUE["赖子"]})  # 第2张赖子
     return deck
 
 
@@ -114,14 +113,13 @@ def is_wild(c: Dict[str, Any]) -> bool:
 
 def classify(cards):
     """
-    牌型识别（含赖子万能牌）。
-    赖子规则（用户确认）：
+    赖子万能牌（用户确认最终版）：
     - 赖子不能单出
     - 赖子+1张非王 = 对子
     - 赖子+2张同rank非王 = 炸弹3
     - 赖子+3张同rank非王 = 氢弹4
-    - 赖子填顺子/连对的缝隙（不能与王组合）
-    - 赖子不能与王组合，不能与氢弹组合
+    - 赖子可填顺子/连对的缝隙，也可扩展边界
+    - 赖子不能与王组合
     """
     if not cards:
         return None
@@ -131,10 +129,8 @@ def classify(cards):
     num_wild = sum(1 for c in cs if is_wild(c))
     real_cards = [c for c in cs if not is_wild(c)]
     rv_vals = sorted(set(c["v"] for c in real_cards))
-
     KING_VAL = RANK_VALUE["小王"]   # v >= KING_VAL is King
 
-    # rv_counter: value -> count (real cards only)
     rv_counter = {}
     for c in real_cards:
         rv_counter[c["v"]] = rv_counter.get(c["v"], 0) + 1
@@ -144,28 +140,64 @@ def classify(cards):
             return (0, 0)
         return max(rv_counter.items(), key=lambda x: x[1])
 
-    def _cons(vals):
-        """严格连续：相邻差=1"""
-        for i in range(len(vals)-1):
-            if vals[i+1] - vals[i] != 1:
-                return False
-        return True
-
-    def _cons_q(vals):
-        """准连续：相邻差<=1"""
-        for i in range(len(vals)-1):
-            if vals[i+1] - vals[i] > 1:
-                return False
-        return True
-
-    def count_gaps(vals):
-        """缝隙总数"""
+    def gaps_of(vals):
         g = 0
-        for i in range(len(vals)-1):
+        for i in range(len(vals) - 1):
             g += vals[i+1] - vals[i] - 1
         return g
 
-    # ==================== 无赖子普通牌 ====================
+    def try_straight():
+        """含赖子的顺子：枚举 lo，验证区间能否容纳实牌且缺=赖子"""
+        if len(real_cards) < 2:
+            return None
+        g = gaps_of(rv_vals)
+        if g > num_wild:
+            return None
+        # 枚举顺子起点 lo：lo_min 考虑赖子可向左扩展，lo_max 确保不超过 A
+        lo_min = max(0, rv_vals[0] - num_wild)
+        lo_max = RANK_VALUE["A"] - n + 1
+        for lo in range(lo_min, lo_max + 1):
+            hi = lo + n - 1
+            if hi > RANK_VALUE["A"]:
+                break
+            expected = set(range(lo, hi + 1))
+            real_set = set(rv_vals)
+            if real_set <= expected and len(expected - real_set) == num_wild:
+                return {"type": STRAIGHT, "value": lo,
+                        "length": n, "cards": cs, "level": 0}
+        return None
+
+    def try_straight_pair():
+        """含赖子的连对：枚举 lo，实牌须全成对，缺的对由赖子补"""
+        if len(real_cards) < 2:
+            return None
+        if any(v >= KING_VAL for v in rv_vals):
+            return None
+        # rv_vals 须交替（相邻值不同），且每段 count=2
+        if not all(rv_counter[v] == 2 for v in rv_vals):
+            return None
+        # pair_ranks = rv_vals[::2]
+        pair_ranks = rv_vals[::2]
+        g = gaps_of(pair_ranks)
+        if g > num_wild:
+            return None
+        remaining = num_wild - g
+        for left in range(remaining + 1):
+            right = remaining - left
+            lo = pair_ranks[0] - left
+            hi = pair_ranks[-1] + right
+            if lo < 1:
+                continue
+            expected_pairs = hi - lo + 1
+            if expected_pairs * 2 != n:
+                continue
+            span = set(range(lo, hi + 1))
+            if set(pair_ranks) <= span:
+                return {"type": STRAIGHT_PAIR, "value": lo,
+                        "length": expected_pairs, "cards": cs, "level": 0}
+        return None
+
+    # ==================== 无赖子 ====================
     if num_wild == 0:
         vals = [c["v"] for c in cs]
         # 王炸
@@ -180,12 +212,13 @@ def classify(cards):
         if n == 2 and vals[0] == vals[1] and vals[0] < KING_VAL:
             return {"type": PAIR, "value": vals[0], "length": 1,
                     "cards": cs, "level": 0}
-        # 三张：炸弹3 或 顺子
+        # 三张
+        if n == 3 and vals[0] == vals[2] and vals[0] < KING_VAL:
+            return {"type": BOMB_3, "value": vals[0], "length": 1,
+                    "cards": cs, "level": BOMB_LEVEL[BOMB_3]}
+        # 三张
         if n == 3:
-            if vals[0] == vals[2] and vals[0] < KING_VAL:
-                return {"type": BOMB_3, "value": vals[0], "length": 1,
-                        "cards": cs, "level": BOMB_LEVEL[BOMB_3]}
-            if _cons(vals) and vals[-1] <= RANK_VALUE["A"]:
+            if _consecutive(vals) and vals[-1] <= RANK_VALUE["A"]:
                 return {"type": STRAIGHT, "value": vals[0], "length": 3,
                         "cards": cs, "level": 0}
             return None
@@ -197,29 +230,30 @@ def classify(cards):
             if _consecutive_pairs(vals) and vals[-1] <= RANK_VALUE["A"]:
                 return {"type": STRAIGHT_PAIR, "value": vals[0],
                         "length": 2, "cards": cs, "level": 0}
-            if _cons(vals) and vals[-1] <= RANK_VALUE["A"]:
+            if _consecutive(vals) and vals[-1] <= RANK_VALUE["A"]:
                 return {"type": STRAIGHT, "value": vals[0], "length": 4,
                         "cards": cs, "level": 0}
             return None
-        # 五张及以上
+        # 五张及以上：先检测顺子/连对，再检测四头炸弹
         if n >= 5:
+            if _consecutive_pairs(vals) and vals[-1] <= RANK_VALUE["A"]:
+                return {"type": STRAIGHT_PAIR, "value": vals[0],
+                        "length": n // 2, "cards": cs, "level": 0}
+            if _consecutive(vals) and vals[-1] <= RANK_VALUE["A"]:
+                return {"type": STRAIGHT, "value": vals[0], "length": n,
+                        "cards": cs, "level": 0}
             mc_v, mc_c = vals[0], 1
             for v in vals[1:]:
-                if v == mc_v: mc_c += 1
-                elif mc_c == 1: mc_v, mc_c = v, 1
+                if v == mc_v:
+                    mc_c += 1
+                elif mc_c == 1:
+                    mc_v, mc_c = v, 1
             if mc_c == n and mc_v < KING_VAL:
                 return {"type": BOMB_4, "value": mc_v, "length": 1,
                         "cards": cs, "level": BOMB_LEVEL[BOMB_4]}
-            if _consecutive_pairs(vals) and vals[-1] <= RANK_VALUE["A"]:
-                return {"type": STRAIGHT_PAIR, "value": vals[0],
-                        "length": n//2, "cards": cs, "level": 0}
-            if _cons(vals) and vals[-1] <= RANK_VALUE["A"]:
-                return {"type": STRAIGHT, "value": vals[0], "length": n,
-                        "cards": cs, "level": 0}
         return None
 
     # ==================== 含赖子 ====================
-
     # 赖子不能单出
     if n == 1:
         return None
@@ -228,51 +262,34 @@ def classify(cards):
     if any(c["v"] >= KING_VAL for c in real_cards):
         return None
 
-    # 对子：赖子 + 1张非王
+    # 炸弹（含赖子）：先检测（优先于顺子/对子）
+    if len(rv_counter) == 1:
+        top_v, top_c = rv_top()
+        if top_v < KING_VAL:
+            if top_c + num_wild == 3:
+                return {"type": BOMB_3, "value": top_v, "length": 1,
+                        "cards": cs, "level": BOMB_LEVEL[BOMB_3]}
+            if top_c == 3 and num_wild == 1:
+                return {"type": BOMB_4, "value": top_v, "length": 1,
+                        "cards": cs, "level": BOMB_LEVEL[BOMB_4]}
+
+    # 对子（2张含赖子）
     if n == 2 and num_wild == 1 and len(real_cards) == 1:
         return {"type": PAIR, "value": real_cards[0]["v"],
                 "length": 1, "cards": cs, "level": 0}
 
-    # 炸弹：赖子 + 同rank非王
-    if num_wild >= 1 and len(real_cards) >= 1 and len(rv_counter) == 1:
-        top_v, top_c = rv_top()
-        if top_c + num_wild == 3:
-            return {"type": BOMB_3, "value": top_v, "length": 1,
-                    "cards": cs, "level": BOMB_LEVEL[BOMB_3]}
-        if top_c == 3 and num_wild == 1:
-            return {"type": BOMB_4, "value": top_v, "length": 1,
-                    "cards": cs, "level": BOMB_LEVEL[BOMB_4]}
+    # 顺子（含赖子）
+    s = try_straight()
+    if s:
+        return s
 
-    # 顺子：实牌须落在某个 n 长连续区间内，缺的由赖子填（不能含2、王）
-    # 枚举起点 lo，[lo, lo+n-1] 覆盖所有实牌，且缺口数 == num_wild
-    if num_wild >= 1 and len(real_cards) >= 2:
-        real_set = set(rv_vals)
-        lo_min = max(0, rv_vals[-1] - (n - 1))
-        lo_max = min(RANK_VALUE["A"] - (n - 1), rv_vals[0])
-        for lo in range(lo_min, lo_max + 1):
-            span = set(range(lo, lo + n))
-            if real_set <= span:                # 实牌都在区间内
-                need = len(span - real_set)     # 缺口由赖子填
-                if need == num_wild:
-                    return {"type": STRAIGHT, "value": lo,
-                            "length": n, "cards": cs, "level": 0}
-
-    # 连对：实牌须全成对，赖子填缺的对（不能含2、王）
-    if num_wild >= 1 and len(real_cards) >= 2 and all(c == 2 for c in rv_counter.values()):
-        pair_ranks = sorted(rv_counter.keys())
-        pair_set = set(pair_ranks)
-        n_pairs = n // 2
-        lo_min = max(0, pair_ranks[-1] - (n_pairs - 1))
-        lo_max = min(RANK_VALUE["A"] - (n_pairs - 1), pair_ranks[0])
-        for lo in range(lo_min, lo_max + 1):
-            span = set(range(lo, lo + n_pairs))
-            if pair_set <= span:
-                need_pairs = len(span - pair_set)
-                if need_pairs * 2 == num_wild:
-                    return {"type": STRAIGHT_PAIR, "value": lo,
-                            "length": n_pairs, "cards": cs, "level": 0}
+    # 连对（含赖子）
+    sp = try_straight_pair()
+    if sp:
+        return sp
 
     return None
+
 
 
 def can_beat(prev: Optional[Dict[str, Any]], new: Dict[str, Any]) -> bool:
