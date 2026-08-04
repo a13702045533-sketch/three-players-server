@@ -376,26 +376,27 @@ class Room:
         self.settlement_task = asyncio.ensure_future(self._settlement_wait())
 
     async def _settlement_wait(self):
-        """SETTLEMENT → NEXT_ROUND：黑板等待30秒（或提前被 confirm_next 触发）"""
-        elapsed = 0
+        """SETTLEMENT：等待房主确认进下一轮。
+        若已是最后一局（game.is_over），自动进入 GAME_END（不需房主确认）。"""
         try:
-            while elapsed < SETTLEMENT_DELAY:
-                await asyncio.sleep(1)
-                elapsed += 1
-                if self.settlement_cancelled:
-                    # confirm_next 已提前触发
-                    return
+            if self.game.is_over:
+                # 最后一局打完：直接进 GAME_END
+                self.settlement_cancelled = True
+            else:
+                # 非最后一局：持续等待房主 confirm_next
+                while not self.settlement_cancelled:
+                    await asyncio.sleep(1)
         except asyncio.CancelledError:
             return
 
-        if self.state != STATE_SETTLEMENT or self.settlement_cancelled:
+        if self.state != STATE_SETTLEMENT:
             return
 
         # 避免自我取消：清掉 settlement_task 引用，防止 _proceed_next_round 里
         # settlement_task.cancel() 取消当前正在执行的 task 自己（导致 GAME_OVER 广播被中断）
         self.settlement_task = None
 
-        # 【步骤7-8】3秒到，自动进入 NEXT_ROUND
+        # 房主已确认 或 最后一局结束，进入 NEXT_ROUND（或 GAME_END）
         await self._proceed_next_round()
 
     async def _proceed_next_round(self):
@@ -581,7 +582,10 @@ async def handle_message(room: Room, seat: int, msg: Dict[str, Any]) -> Optional
 
     if room.state in (STATE_ROUND_END, STATE_SETTLEMENT, STATE_NEXT_ROUND):
         if mtype == "confirm_next":
-            # 提前结束黑板等待，进入 NEXT_ROUND
+            # 只有房主能确认进下一轮
+            if seat != room.host_seat:
+                return {"type": "error", "message": "只有房主能继续下一轮"}
+            # 结束结算等待，进入 NEXT_ROUND
             room.cancel_settlement()
             async with room.lock:
                 await room._proceed_next_round()

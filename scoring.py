@@ -6,6 +6,7 @@
 - 基础底分：剩余手牌张数 × 2
 - 倍率（全部乘法叠加，无上限）：
     普通炸弹 ×2 / 氢弹·双王炸弹 ×4 / 春天 ×2
+- 春天：单个玩家全局一张牌都没打出 = 该玩家被春天，其本轮输分 ×2（额外部分加给赢家）
 - 单轮封顶：赢家最高 +1600，单个输家最高 -800
 - 赢家得分 = 两名输家扣除分数总和
 """
@@ -34,24 +35,23 @@ def round_multiplier(bomb_kinds: List[str]) -> int:
     return m
 
 
-def spring_multiplier(is_spring: bool) -> int:
-    """春天 ×2。"""
-    return 2 if is_spring else 1
-
-
 def settle_round(winner: int,
                  hands: Dict[int, List[Any]],
                  bomb_records: List[Dict[str, Any]],
-                 is_spring: bool,
+                 has_played: Dict[int, bool],
                  round_no: int) -> Dict[str, Any]:
     """
     结算单小轮。
+
+    - 春天：某输家全程没出过牌（has_played[s] == False）= 该玩家被春天，
+      其基础输分先 ×2（连同炸弹倍率），多出的部分计入赢家得分。
 
     返回：
     {
       "round_no": int,
       "winner_seat": int,
-      "spring": bool,
+      "spring": bool,               # 是否存在春天
+      "spring_seats": [被春天的座位...],
       "bombs": [{"kind","seat"}...],
       "remaining": {seat: 张数},
       "deltas": {seat: 分数变动(相对总分)},   # 赢家为正，输家为负
@@ -65,21 +65,27 @@ def settle_round(winner: int,
 
     bomb_kinds = [b["kind"] for b in bomb_records]
     bomb_mult = round_multiplier(bomb_kinds)
-    spring_mult = spring_multiplier(is_spring)
+
+    # 春天：输家全程没出牌
+    spring_seats = [s for s in range(3) if s != winner and not has_played.get(s, True)]
 
     losers = [s for s in range(3) if s != winner]
     total_gain = 0
     for s in losers:
         remaining = len(hands[s])
         base = base_score(remaining)
-        loss = base * bomb_mult * spring_mult
+        loss = base * bomb_mult
+        is_spring = s in spring_seats
+        if is_spring:
+            loss *= 2   # 被春天：输分 ×2
         if loss > abs(MAX_LOSER_LOSS):
             capped[s] = True
             loss = abs(MAX_LOSER_LOSS)
         deltas[s] = -loss
+        spring_tag = "×2春天" if is_spring else ""
         details[s] = (f"{remaining}张×2={base}"
                       f"{('×2' if bomb_mult > 1 else '')}"
-                      f"{('×2春天' if is_spring else '')}"
+                      f"{spring_tag}"
                       f"→{loss}")
         total_gain += loss
 
@@ -92,7 +98,8 @@ def settle_round(winner: int,
     return {
         "round_no": round_no,
         "winner_seat": winner,
-        "spring": is_spring,
+        "spring": bool(spring_seats),
+        "spring_seats": spring_seats,
         "bombs": bomb_records,
         "remaining": {s: len(hands[s]) for s in range(3)},
         "deltas": deltas,

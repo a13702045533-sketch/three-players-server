@@ -509,17 +509,11 @@ class Round:
 
     # ---- 结算 ----
 
-    def is_spring(self) -> bool:
-        """春天：赢家是第一轮出牌者，且另外两人全程一张牌都没打过。"""
-        if self.winner is None or self.winner != self.first_seat:
-            return False
-        return not any(self.has_played[s] for s in range(3) if s != self.winner)
-
     def settle(self) -> Dict[str, Any]:
         """结算本轮，返回结果字典（含扣分明细与分数变动）。"""
         from scoring import settle_round
         return settle_round(self.winner, self.hands, self.round_multipliers,
-                            self.is_spring(), round_no=self.round_no)
+                            self.has_played, round_no=self.round_no)
 
 
 # ---------------------------------------------------------------------------
