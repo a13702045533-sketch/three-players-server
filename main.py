@@ -43,7 +43,7 @@ STATE_GAME_END  = "GAME_END"
 # ---------------------------------------------------------------------------
 AUTO_START_DELAY   = 5      # 人齐后自动开局倒计时（秒）
 ROUND_END_PAUSE    = 5      # 桌面停留：ROUND_END 后展示5秒
-SETTLEMENT_DELAY   = 30     # 黑板显示：SETTLEMENT 默认30秒
+SETTLEMENT_DELAY   = 3      # 结算小提示展示：SETTLEMENT 默认3秒后自动下一轮
 TURN_TIMEOUT_S     = 60     # 出牌超时：60秒不出自动操作
 RECONNECT_GRACE    = 60     # 断线重连宽限期（秒）
 
