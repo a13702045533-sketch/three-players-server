@@ -389,7 +389,11 @@ class Room:
         if self.state != STATE_SETTLEMENT or self.settlement_cancelled:
             return
 
-        # 【步骤7-8】30秒到，自动进入 NEXT_ROUND
+        # 避免自我取消：清掉 settlement_task 引用，防止 _proceed_next_round 里
+        # settlement_task.cancel() 取消当前正在执行的 task 自己（导致 GAME_OVER 广播被中断）
+        self.settlement_task = None
+
+        # 【步骤7-8】3秒到，自动进入 NEXT_ROUND
         await self._proceed_next_round()
 
     async def _proceed_next_round(self):
