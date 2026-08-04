@@ -126,9 +126,11 @@ class Room:
         return None
 
     def remove_player(self, seat: int):
+        """玩家掉线：标记 disconnected，保留座位以便重连找回。
+        不删除 players 记录（reconnect_player 依赖它按 player_id 找回）。"""
         if seat in self.players:
             self.players[seat].connected = False
-            del self.players[seat]
+            self.players[seat].ws = None
             if seat in self.order:
                 self.order.remove(seat)
 

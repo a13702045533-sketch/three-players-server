@@ -48,7 +48,7 @@ COMBO_CN = {
 # ---------------------------------------------------------------------------
 
 def build_deck() -> List[Dict[str, Any]]:
-    """构建完整 54 张扑克牌。"""
+    """构建完整 56 张扑克牌（54 张普通牌 + 2 张赖子）。"""
     deck: List[Dict[str, Any]] = []
     for rank in CARD_ORDER[:13]:                # 3 ~ 2 各4张
         v = RANK_VALUE[rank]
@@ -112,246 +112,166 @@ def is_wild(c: Dict[str, Any]) -> bool:
     return c["r"] == "赖子"
 
 
-def classify(cards: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+def classify(cards):
     """
-    识别一组牌是什么牌型（含赖子万能牌）。
-    赖子规则：
-    - 必须与至少一张非赖子牌组合使用（赖子不能单出）
-    - 赖子作为单张：可当任意非王单牌，value=所当牌的rank
-    - 赖子+对子牌：视为该对（如赖子+3♠+3♥=对3）
-    - 2张同rank非王+赖子：视为炸弹（如赖子+3♠+3♥=炸弹3）
-    - 赖子不能组成顺子/连对（顺子不含王）
-    - 赖子不能替代王，赖子+大王/小王≠王炸
-    返回牌型字典或 None（非法牌型）。
+    牌型识别（含赖子万能牌）。
+    赖子规则（用户确认）：
+    - 赖子不能单出
+    - 赖子+1张非王 = 对子
+    - 赖子+2张同rank非王 = 炸弹3
+    - 赖子+3张同rank非王 = 氢弹4
+    - 赖子填顺子/连对的缝隙（不能与王组合）
+    - 赖子不能与王组合，不能与氢弹组合
     """
     if not cards:
         return None
     cs = sort_cards(cards)
     n = len(cs)
 
-    # ---- 统计各成分数量 ----
-    rank_vals = [c["v"] for c in cs]
-    ranks_set = {c["r"] for c in cs}
     num_wild = sum(1 for c in cs if is_wild(c))
     real_cards = [c for c in cs if not is_wild(c)]
+    rv_vals = sorted(set(c["v"] for c in real_cards))
 
-    # 纯赖子 = 非法（赖子不能单出）
-    if num_wild == n:
-        return None
+    KING_VAL = RANK_VALUE["小王"]   # v >= KING_VAL is King
 
-    # ---- 赖子必须在 1~2 张以内（牌数限制） ----
-    if num_wild > 2:
-        return None
+    # rv_counter: value -> count (real cards only)
+    rv_counter = {}
+    for c in real_cards:
+        rv_counter[c["v"]] = rv_counter.get(c["v"], 0) + 1
 
-    def real_vals():
-        """非赖子牌的 rank values（升序去重）。"""
-        seen = []
-        for v in sorted(c["v"] for c in real_cards):
-            if not seen or v != seen[-1]:
-                seen.append(v)
-        return seen
+    def rv_top():
+        if not rv_counter:
+            return (0, 0)
+        return max(rv_counter.items(), key=lambda x: x[1])
 
-    def is_king_val(v: int) -> bool:
-        return v >= RANK_VALUE["小王"]
+    def _cons(vals):
+        """严格连续：相邻差=1"""
+        for i in range(len(vals)-1):
+            if vals[i+1] - vals[i] != 1:
+                return False
+        return True
 
-    def is_suit_ok(v: int) -> bool:
-        """该 value 是否可用于组成不含王的牌型。"""
-        return v < RANK_VALUE["小王"]   # ≤A(12) 才算普通值
+    def _cons_q(vals):
+        """准连续：相邻差<=1"""
+        for i in range(len(vals)-1):
+            if vals[i+1] - vals[i] > 1:
+                return False
+        return True
 
-    # ==================== 单牌 ====================
-    if n == 1:
-        # 赖子单出 = 合法万能单牌；普通牌正常处理
-        return {"type": SINGLE, "value": cs[0]["v"], "length": 1,
-                "cards": cs, "level": 0}
+    def count_gaps(vals):
+        """缝隙总数"""
+        g = 0
+        for i in range(len(vals)-1):
+            g += vals[i+1] - vals[i] - 1
+        return g
 
-
-    # ==================== 两张 ====================
-    if n == 2:
-        if num_wild == 2:                # 赖子+赖子 = 非法
-            return None
-        # 赖子 + 一张普通牌 → 对子（普通牌 rank）
-        if num_wild == 1:
-            real = real_cards[0]
-            if is_king_val(real["v"]):   # 赖子+王 = 非法
-                return None
-            return {"type": PAIR, "value": real["v"], "length": 1,
+    # ==================== 无赖子普通牌 ====================
+    if num_wild == 0:
+        vals = [c["v"] for c in cs]
+        # 王炸
+        if n == 2 and vals[0] >= KING_VAL and vals[1] >= KING_VAL:
+            return {"type": BOMB_JOKER, "value": vals[1],
+                    "length": 1, "cards": cs, "level": BOMB_LEVEL[BOMB_JOKER]}
+        # 单牌
+        if n == 1:
+            return {"type": SINGLE, "value": vals[0], "length": 1,
                     "cards": cs, "level": 0}
-        # 双王炸弹
-        if ranks_set == {"小王", "大王"}:
-            return {"type": BOMB_JOKER, "value": 99, "length": 1,
-                    "cards": cs, "level": BOMB_LEVEL[BOMB_JOKER]}
-        # 赖子==0：普通对子
-        if rank_vals[0] == rank_vals[1]:
-            return {"type": PAIR, "value": rank_vals[0], "length": 1,
+        # 对子
+        if n == 2 and vals[0] == vals[1] and vals[0] < KING_VAL:
+            return {"type": PAIR, "value": vals[0], "length": 1,
                     "cards": cs, "level": 0}
-        return None
-
-    # ==================== 三张 ====================
-    if n == 3:
-        # ---- 基于 real_cards 统计（非王 rank） ----
-        from collections import Counter
-        real_v_counts = Counter(c["v"] for c in real_cards if c["v"] < RANK_VALUE["小王"])
-
-        if num_wild == 2:
-            # 赖子+赖子+1张普通牌 → 对子（普通牌 rank）
-            if not real_cards:
-                return None
-            real = real_cards[0]
-            if is_king_val(real["v"]):
-                return None
-            return {"type": PAIR, "value": real["v"], "length": 1,
-                    "cards": cs, "level": 0}
-        if num_wild == 1:
-            # 1赖子 + 2非王：看 real_v_counts
-            if len(real_v_counts) == 1:
-                # 2张同rank非王 + 赖子 → 炸弹3
-                rv = list(real_v_counts.keys())[0]
-                return {"type": BOMB_3, "value": rv, "length": 1,
+        # 三张：炸弹3 或 顺子
+        if n == 3:
+            if vals[0] == vals[2] and vals[0] < KING_VAL:
+                return {"type": BOMB_3, "value": vals[0], "length": 1,
                         "cards": cs, "level": BOMB_LEVEL[BOMB_3]}
-            else:
-                # 2张不同rank + 赖子 = 非法组合
-                return None
-        # 无赖子：普通炸弹
-        if rank_vals[0] == rank_vals[2]:
-            return {"type": BOMB_3, "value": rank_vals[0], "length": 1,
-                    "cards": cs, "level": BOMB_LEVEL[BOMB_3]}
-        # 无赖子：顺子（不含2、王）
-        if rank_vals[-1] <= RANK_VALUE["A"] and _consecutive(rank_vals):
-            return {"type": STRAIGHT, "value": rank_vals[0], "length": n,
-                    "cards": cs, "level": 0}
-        return None
-
-    # ==================== 四张 ====================
-    if n == 4:
-        from collections import Counter
-        real_v_counts = Counter(c["v"] for c in real_cards if c["v"] < RANK_VALUE["小王"])
-
-        if num_wild >= 1:
-            if not real_cards:
-                return None
-            if num_wild == 1:
-                # 1赖子 + 3非王：必须恰好是3张同rank + 赖子 才算氢弹
-                if len(real_v_counts) == 1:
-                    # 3张同rank + 赖子 = 氢弹（4张炸弹）
-                    rv = list(real_v_counts.keys())[0]
-                    return {"type": BOMB_4, "value": rv, "length": 1,
-                            "cards": cs, "level": BOMB_LEVEL[BOMB_4]}
-                elif len(real_v_counts) == 3:
-                    # 1赖子+3单（3种不同rank）→ 顺子（如可填补）
-                    sorted_vals = sorted(real_v_counts)
-                    if _consecutive(sorted_vals):
-                        return {"type": STRAIGHT, "value": sorted_vals[0], "length": n,
-                                "cards": cs, "level": 0}
-                return None
-            elif num_wild == 2:
-                # 2赖子 + 2非王
-                if len(real_v_counts) == 1:
-                    rv = list(real_v_counts.keys())[0]
-                    return {"type": BOMB_4, "value": rv, "length": 1,
-                            "cards": cs, "level": BOMB_LEVEL[BOMB_4]}
-                elif len(real_v_counts) == 2:
-                    sorted_vals = sorted(real_v_counts)
-                    if _consecutive(sorted_vals):
-                        return {"type": STRAIGHT, "value": sorted_vals[0], "length": n,
-                                "cards": cs, "level": 0}
-                return None
-        # 无赖子
-        highest_ok = rank_vals[-1] <= RANK_VALUE["A"]   # 顺子/连对不含2、王
-        if rank_vals[0] == rank_vals[3]:
-            return {"type": BOMB_4, "value": rank_vals[0], "length": 1,
-                    "cards": cs, "level": BOMB_LEVEL[BOMB_4]}
-        if highest_ok and _consecutive(rank_vals):
-            return {"type": STRAIGHT, "value": rank_vals[0], "length": n,
-                    "cards": cs, "level": 0}
-        if highest_ok and _consecutive_pairs(rank_vals):
-            return {"type": STRAIGHT_PAIR, "value": rank_vals[0], "length": n // 2,
-                    "cards": cs, "level": 0}
-        return None
-
-    # ==================== 五张及以上 ====================
-    # 含赖子时：只处理顺子和连对（需要检查赖子能否填补空隙）
-    if num_wild >= 1:
-        rv = real_vals()
-        if not rv:
+            if _cons(vals) and vals[-1] <= RANK_VALUE["A"]:
+                return {"type": STRAIGHT, "value": vals[0], "length": 3,
+                        "cards": cs, "level": 0}
             return None
-        # 顺子：检查 rv 是否连续，且赖子能填满空隙
-        if _consecutive(rv):
-            # 顺子需要恰好 n 张，赖子只能填最多 gap=1 的小缝隙
-            min_v, max_v = rv[0], rv[-1]
-            expected_len = max_v - min_v + 1
-            if len(rv) + num_wild < expected_len:
-                pass  # 空隙太大，跳过
-            else:
-                # 刚好或超出，取 rv[0] 作为顺子起点（可能高估，但概率极低）
-                if len(rv) + num_wild == expected_len:
-                    # 完美匹配：rv 连续，赖子正好填满缝隙
-                    if rv[0] > 0:
-                        return {"type": STRAIGHT, "value": rv[0], "length": expected_len,
-                                "cards": cs, "level": 0}
-                elif len(rv) + num_wild == n and expected_len <= n:
-                    # 可能的高牌型
-                    if rv[0] > 0:
-                        return {"type": STRAIGHT, "value": rv[0], "length": n,
-                                "cards": cs, "level": 0}
-
-        # 连对：3对及以上，检查
-        if len(rv) >= 3 and len(rv) % 2 == 0:
-            pairs_vals = rv[::2]
-            if len(pairs_vals) >= 2 and _consecutive(pairs_vals):
-                if num_wild >= 1:
-                    return {"type": STRAIGHT_PAIR, "value": pairs_vals[0],
-                            "length": len(pairs_vals),
-                            "cards": cs, "level": 0}
-
+        # 四张
+        if n == 4:
+            if vals[0] == vals[3] and vals[0] < KING_VAL:
+                return {"type": BOMB_4, "value": vals[0], "length": 1,
+                        "cards": cs, "level": BOMB_LEVEL[BOMB_4]}
+            if _consecutive_pairs(vals) and vals[-1] <= RANK_VALUE["A"]:
+                return {"type": STRAIGHT_PAIR, "value": vals[0],
+                        "length": 2, "cards": cs, "level": 0}
+            if _cons(vals) and vals[-1] <= RANK_VALUE["A"]:
+                return {"type": STRAIGHT, "value": vals[0], "length": 4,
+                        "cards": cs, "level": 0}
+            return None
+        # 五张及以上
+        if n >= 5:
+            mc_v, mc_c = vals[0], 1
+            for v in vals[1:]:
+                if v == mc_v: mc_c += 1
+                elif mc_c == 1: mc_v, mc_c = v, 1
+            if mc_c == n and mc_v < KING_VAL:
+                return {"type": BOMB_4, "value": mc_v, "length": 1,
+                        "cards": cs, "level": BOMB_LEVEL[BOMB_4]}
+            if _consecutive_pairs(vals) and vals[-1] <= RANK_VALUE["A"]:
+                return {"type": STRAIGHT_PAIR, "value": vals[0],
+                        "length": n//2, "cards": cs, "level": 0}
+            if _cons(vals) and vals[-1] <= RANK_VALUE["A"]:
+                return {"type": STRAIGHT, "value": vals[0], "length": n,
+                        "cards": cs, "level": 0}
         return None
 
-    # 无赖子：标准判断
-    has_joker = ("小王" in ranks_set or "大王" in ranks_set)
-    highest_ok = rank_vals[-1] <= RANK_VALUE["A"]
-    if _consecutive(rank_vals) and highest_ok:
-        return {"type": STRAIGHT, "value": rank_vals[0], "length": n,
-                "cards": cs, "level": 0}
-    if _consecutive_pairs(rank_vals) and highest_ok:
-        return {"type": STRAIGHT_PAIR, "value": rank_vals[0], "length": n // 2,
-                "cards": cs, "level": 0}
-    return None
+    # ==================== 含赖子 ====================
 
+    # 赖子不能单出
     if n == 1:
-        return {"type": SINGLE, "value": vals[0], "length": 1, "cards": cs, "level": 0}
-
-    if n == 2:
-        if ranks == {"小王", "大王"}:            # 双王炸弹
-            return {"type": BOMB_JOKER, "value": 99, "length": 1,
-                    "cards": cs, "level": BOMB_LEVEL[BOMB_JOKER]}
-        if vals[0] == vals[1]:                    # 对子（王不能组对）
-            return {"type": PAIR, "value": vals[0], "length": 1, "cards": cs, "level": 0}
         return None
 
-    if n == 3:
-        if vals[0] == vals[1] == vals[2]:         # 普通炸弹
-            return {"type": BOMB_3, "value": vals[0], "length": 1,
+    # 赖子不能与王组合
+    if any(c["v"] >= KING_VAL for c in real_cards):
+        return None
+
+    # 对子：赖子 + 1张非王
+    if n == 2 and num_wild == 1 and len(real_cards) == 1:
+        return {"type": PAIR, "value": real_cards[0]["v"],
+                "length": 1, "cards": cs, "level": 0}
+
+    # 炸弹：赖子 + 同rank非王
+    if num_wild >= 1 and len(real_cards) >= 1 and len(rv_counter) == 1:
+        top_v, top_c = rv_top()
+        if top_c + num_wild == 3:
+            return {"type": BOMB_3, "value": top_v, "length": 1,
                     "cards": cs, "level": BOMB_LEVEL[BOMB_3]}
-        if not has_joker and _consecutive(vals) and highest_ok:
-            return {"type": STRAIGHT, "value": vals[0], "length": n, "cards": cs, "level": 0}
-        return None
-
-    if n == 4:
-        if vals[0] == vals[1] == vals[2] == vals[3]:   # 氢弹
-            return {"type": BOMB_4, "value": vals[0], "length": 1,
+        if top_c == 3 and num_wild == 1:
+            return {"type": BOMB_4, "value": top_v, "length": 1,
                     "cards": cs, "level": BOMB_LEVEL[BOMB_4]}
-        if not has_joker and _consecutive(vals) and highest_ok:
-            return {"type": STRAIGHT, "value": vals[0], "length": n, "cards": cs, "level": 0}
-        if not has_joker and _consecutive_pairs(vals) and highest_ok:
-            return {"type": STRAIGHT_PAIR, "value": vals[0], "length": n // 2,
-                    "cards": cs, "level": 0}
-        return None
 
-    # n >= 5
-    if not has_joker and _consecutive(vals) and highest_ok:
-        return {"type": STRAIGHT, "value": vals[0], "length": n, "cards": cs, "level": 0}
-    if not has_joker and _consecutive_pairs(vals) and highest_ok:
-        return {"type": STRAIGHT_PAIR, "value": vals[0], "length": n // 2,
-                "cards": cs, "level": 0}
+    # 顺子：实牌须落在某个 n 长连续区间内，缺的由赖子填（不能含2、王）
+    # 枚举起点 lo，[lo, lo+n-1] 覆盖所有实牌，且缺口数 == num_wild
+    if num_wild >= 1 and len(real_cards) >= 2:
+        real_set = set(rv_vals)
+        lo_min = max(0, rv_vals[-1] - (n - 1))
+        lo_max = min(RANK_VALUE["A"] - (n - 1), rv_vals[0])
+        for lo in range(lo_min, lo_max + 1):
+            span = set(range(lo, lo + n))
+            if real_set <= span:                # 实牌都在区间内
+                need = len(span - real_set)     # 缺口由赖子填
+                if need == num_wild:
+                    return {"type": STRAIGHT, "value": lo,
+                            "length": n, "cards": cs, "level": 0}
+
+    # 连对：实牌须全成对，赖子填缺的对（不能含2、王）
+    if num_wild >= 1 and len(real_cards) >= 2 and all(c == 2 for c in rv_counter.values()):
+        pair_ranks = sorted(rv_counter.keys())
+        pair_set = set(pair_ranks)
+        n_pairs = n // 2
+        lo_min = max(0, pair_ranks[-1] - (n_pairs - 1))
+        lo_max = min(RANK_VALUE["A"] - (n_pairs - 1), pair_ranks[0])
+        for lo in range(lo_min, lo_max + 1):
+            span = set(range(lo, lo + n_pairs))
+            if pair_set <= span:
+                need_pairs = len(span - pair_set)
+                if need_pairs * 2 == num_wild:
+                    return {"type": STRAIGHT_PAIR, "value": lo,
+                            "length": n_pairs, "cards": cs, "level": 0}
+
     return None
 
 
@@ -362,50 +282,14 @@ def can_beat(prev: Optional[Dict[str, Any]], new: Dict[str, Any]) -> bool:
     - 普通牌型（单张/对子/顺子/连对）：
       必须同类型、同长度、恰好大 1 级（2 和王除外）。
       · 单张：2 可以管 3~A 任意单张（除王外），王可以管任意单张（小王管 2，大王管小王）
-      · 赖子：单张可当任意非王单牌（含作为单张出）；组合中以所替代牌的价值计算
       · 对子：对2可以管任意对子（王不能组对子，所以对2最大）
       · 顺子/连对：不含 2 和王，仍然只接受恰好大 1 级
     - 炸弹：无视大一级规则，可压所有普通牌；
       优先级：普通炸弹 < 双王炸弹 < 氢弹（氢弹可压双王，双王可压普通炸弹）
+    - 含赖子的牌型：赖子所代表的 value 已在 classify 中体现，直接按上述规则比较即可。
     """
     if prev is None:
         return True
-
-    # ---- 赖子特殊处理 ----
-    new_has_laizi = any(is_wild(c) for c in new["cards"])
-    prev_has_laizi = any(is_wild(c) for c in prev["cards"])
-    if new_has_laizi and not prev_has_laizi:
-        # 新牌含赖子，旧牌不含王：可以压（普通牌）
-        if prev["type"] in BOMB_TYPES:
-            return BOMB_LEVEL[new["type"]] > BOMB_LEVEL[prev["type"]] or \
-                (new["type"] == prev["type"] and new["value"] > prev["value"])
-        return True
-    if not new_has_laizi and prev_has_laizi:
-        # 旧牌含赖子，新牌不含赖子：必须是小王/大王才能管
-        if new["type"] == SINGLE and new["value"] >= RANK_VALUE["小王"]:
-            return new["value"] > prev["value"]
-        return False
-    if new_has_laizi and prev_has_laizi:
-        # 两边都有赖子：比rank或类型
-        if new["type"] == SINGLE and prev["type"] == SINGLE:
-            return new["value"] > prev["value"]
-        if new["type"] in BOMB_TYPES and prev["type"] in BOMB_TYPES:
-            if new["type"] == prev["type"]:
-                return new["value"] > prev["value"]
-            return BOMB_LEVEL[new["type"]] > BOMB_LEVEL[prev["type"]]
-        return True
-    # 普通压制
-        # 含赖子的组合（对子/炸弹）：只接受同类王炸或更大炸弹
-        if prev["type"] in BOMB_TYPES:
-            if prev["type"] == new["type"]:
-                return new["value"] > prev["value"]
-            return BOMB_LEVEL[new["type"]] > BOMB_LEVEL[prev["type"]]
-        # 含赖子的非炸弹 vs 普通牌：赢
-        if prev["type"] in NORMAL_TYPES:
-            return True
-        return False
-
-    # ---- 双方无赖子：标准规则 ----
 
     # 新出的牌是炸弹
     if new["type"] in BOMB_TYPES:
