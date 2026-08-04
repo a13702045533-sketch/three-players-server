@@ -275,7 +275,7 @@ class Room:
                 else:
                     # 真人超时
                     await broadcast(self, {"type": "notice",
-                                         "message": f"座位{seat}超时{self.turn_timeout_s}秒，自动操作"})
+                                         "message": f"座位{seat}超时{TURN_TIMEOUT_S}秒，自动操作"})
                     if r.current_play is not None:
                         ok, _ = r.pass_(seat)
                     else:
