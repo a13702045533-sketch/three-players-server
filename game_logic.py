@@ -541,7 +541,13 @@ class GameSession:
 
     @property
     def is_over(self) -> bool:
-        return self.round_no >= self.total_rounds
+        """大局是否结束：已打完 total_rounds 轮（当前轮已结算）。
+        注意：round_no 在 start_round 时先 +1，所以第10局进行中 round_no==10，
+        但此时当前轮还没结算，不算结束。只有第10局打完（round 已结算）才算。"""
+        if self.round_no < self.total_rounds:
+            return False
+        # 已打完最后一轮且已结算（round 已结算后 history 含当前轮）
+        return self.round is not None and len(self.history) >= self.round_no
 
     def start_round(self, first_seat: int) -> Round:
         """开始新一小轮。"""
