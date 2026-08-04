@@ -52,9 +52,11 @@ RECONNECT_GRACE    = 60     # 断线重连宽限期（秒）
 # ---------------------------------------------------------------------------
 
 class Player:
-    def __init__(self, seat: int, name: str, ws: WebSocket, is_bot: bool = False):
+    def __init__(self, seat: int, name: str, ws: WebSocket, is_bot: bool = False,
+                 avatar: str = ""):
         self.seat = seat
         self.name = name
+        self.avatar = avatar or "🐱"   # 默认头像
         self.player_id: str = "".join(random.choices(string.ascii_letters + string.digits, k=16))
         self.ws = ws
         self.connected = True
@@ -62,7 +64,7 @@ class Player:
 
 
 class Room:
-    def __init__(self, code: str, host_name: str, host_ws: WebSocket):
+    def __init__(self, code: str, host_name: str, host_ws: WebSocket, host_avatar: str = ""):
         self.code = code
         self.players: Dict[int, Player] = {}
         self.order: List[int] = []
@@ -93,16 +95,16 @@ class Room:
         # 提前关闭黑板（confirm_next）
         self.settlement_cancelled = False
 
-        self.add_player(host_name, host_ws)
+        self.add_player(host_name, host_ws, host_avatar)
 
     # ---- 座位管理 ----
 
-    def add_player(self, name: str, ws: WebSocket) -> Optional[int]:
+    def add_player(self, name: str, ws: WebSocket, avatar: str = "") -> Optional[int]:
         if len(self.players) >= 3:
             return None
         seat = self._next_seat
         self._next_seat += 1
-        p = Player(seat, name, ws)
+        p = Player(seat, name, ws, avatar=avatar)
         self.players[seat] = p
         self.order.append(seat)
         return seat
@@ -457,7 +459,8 @@ def card_list_for_send(cards: List[Dict]) -> List[Dict]:
 def player_view(room: Room, seat: int) -> Dict[str, Any]:
     others = {}
     for s, p in room.players.items():
-        others[s] = {"name": p.name, "connected": p.connected, "is_bot": p.is_bot}
+        others[s] = {"name": p.name, "connected": p.connected, "is_bot": p.is_bot,
+                     "avatar": getattr(p, "avatar", "")}
     base = {
         "code": room.code,
         "started": room.started,
@@ -688,7 +691,8 @@ async def handle_message(room: Room, seat: int, msg: Dict[str, Any]) -> Optional
 # WebSocket 端点
 # ---------------------------------------------------------------------------
 
-async def ws_endpoint(ws: WebSocket, code: str, name: str, player_id: str = ""):
+async def ws_endpoint(ws: WebSocket, code: str, name: str, player_id: str = "",
+                      avatar: str = ""):
     await ws.accept()
     room = ROOMS.get(code)
     if room is None:
@@ -701,6 +705,8 @@ async def ws_endpoint(ws: WebSocket, code: str, name: str, player_id: str = ""):
         p = room.reconnect_player(player_id, ws)
         if p:
             seat = p.seat
+            if avatar:
+                p.avatar = avatar
             await broadcast(room, {"type": "notice",
                                    "message": f"{p.name} 重新连接"})
             await send_view(room)
@@ -715,7 +721,7 @@ async def ws_endpoint(ws: WebSocket, code: str, name: str, player_id: str = ""):
         await ws.close()
         return
 
-    seat = room.add_player(name, ws)
+    seat = room.add_player(name, ws, avatar=avatar)
     if seat is None:
         await ws.send_json({"type": "error", "message": "房间已满"})
         await ws.close()
@@ -773,15 +779,15 @@ async def _player_loop(room: Room, seat: int, name: str, ws: WebSocket):
 
 
 @app.websocket("/ws/room")
-async def ws_room(ws: WebSocket, code: str, name: str, pid: str = ""):
-    await ws_endpoint(ws, code, name, pid)
+async def ws_room(ws: WebSocket, code: str, name: str, pid: str = "", avatar: str = ""):
+    await ws_endpoint(ws, code, name, pid, avatar)
 
 
 @app.websocket("/ws/create")
-async def ws_create(ws: WebSocket, name: str):
+async def ws_create(ws: WebSocket, name: str, avatar: str = ""):
     await ws.accept()
     code = gen_room_code()
-    room = Room(code, name, ws)
+    room = Room(code, name, ws, avatar)
     ROOMS[code] = room
     await ws.send_json({"type": "room_created", "data": {
         "code": code,
@@ -792,10 +798,10 @@ async def ws_create(ws: WebSocket, name: str):
 
 
 @app.websocket("/ws/practice")
-async def ws_practice(ws: WebSocket, name: str):
+async def ws_practice(ws: WebSocket, name: str, avatar: str = ""):
     await ws.accept()
     code = gen_room_code()
-    room = Room(code, name, ws)
+    room = Room(code, name, ws, avatar)
     room.add_bot("电脑1")
     room.add_bot("电脑2")
     room.practice_mode = True
