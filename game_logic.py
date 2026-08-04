@@ -57,6 +57,7 @@ def build_deck() -> List[Dict[str, Any]]:
     deck.append({"r": "小王", "s": JOKER_SUIT, "v": RANK_VALUE["小王"]})
     deck.append({"r": "大王", "s": JOKER_SUIT, "v": RANK_VALUE["大王"]})
     deck.append({"r": "赖子", "s": "LZ", "v": RANK_VALUE["赖子"]})  # 1张赖子
+    deck.append({"r": "赖子", "s": "LZ2", "v": RANK_VALUE["赖子"]})  # 第2张赖子
     return deck
 
 
@@ -159,12 +160,10 @@ def classify(cards: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
 
     # ==================== 单牌 ====================
     if n == 1:
-        c = cs[0]
-        if is_wild(c):
-            return None   # 赖子单出 = 非法
-        # 普通单牌
-        return {"type": SINGLE, "value": c["v"], "length": 1,
+        # 赖子单出 = 合法万能单牌；普通牌正常处理
+        return {"type": SINGLE, "value": cs[0]["v"], "length": 1,
                 "cards": cs, "level": 0}
+
 
     # ==================== 两张 ====================
     if n == 2:
@@ -209,12 +208,9 @@ def classify(cards: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
                 rv = list(real_v_counts.keys())[0]
                 return {"type": BOMB_3, "value": rv, "length": 1,
                         "cards": cs, "level": BOMB_LEVEL[BOMB_3]}
-            elif len(real_v_counts) == 2:
-                # 2张不同rank非王 + 赖子 → 对子（取最大rank）
-                max_rv = max(real_v_counts.keys())
-                return {"type": PAIR, "value": max_rv, "length": 1,
-                        "cards": cs, "level": 0}
-            return None
+            else:
+                # 2张不同rank + 赖子 = 非法组合
+                return None
         # 无赖子：普通炸弹
         if rank_vals[0] == rank_vals[2]:
             return {"type": BOMB_3, "value": rank_vals[0], "length": 1,
@@ -375,14 +371,30 @@ def can_beat(prev: Optional[Dict[str, Any]], new: Dict[str, Any]) -> bool:
     if prev is None:
         return True
 
-    # ---- 赖子特殊处理：含赖子的牌型只怕王 ----
+    # ---- 赖子特殊处理 ----
     new_has_laizi = any(is_wild(c) for c in new["cards"])
-    if new_has_laizi:
-        if new["type"] == SINGLE:
-            # 赖子单张（value=赖子的rank）：压任何非王；压王则看具体大小
-            if prev["type"] == SINGLE and prev["value"] >= RANK_VALUE["小王"]:
-                return new["value"] > prev["value"]   # 赖子压王炸，看谁大王
-            return True   # 赖子单张 > 任意非王
+    prev_has_laizi = any(is_wild(c) for c in prev["cards"])
+    if new_has_laizi and not prev_has_laizi:
+        # 新牌含赖子，旧牌不含王：可以压（普通牌）
+        if prev["type"] in BOMB_TYPES:
+            return BOMB_LEVEL[new["type"]] > BOMB_LEVEL[prev["type"]] or \
+                (new["type"] == prev["type"] and new["value"] > prev["value"])
+        return True
+    if not new_has_laizi and prev_has_laizi:
+        # 旧牌含赖子，新牌不含赖子：必须是小王/大王才能管
+        if new["type"] == SINGLE and new["value"] >= RANK_VALUE["小王"]:
+            return new["value"] > prev["value"]
+        return False
+    if new_has_laizi and prev_has_laizi:
+        # 两边都有赖子：比rank或类型
+        if new["type"] == SINGLE and prev["type"] == SINGLE:
+            return new["value"] > prev["value"]
+        if new["type"] in BOMB_TYPES and prev["type"] in BOMB_TYPES:
+            if new["type"] == prev["type"]:
+                return new["value"] > prev["value"]
+            return BOMB_LEVEL[new["type"]] > BOMB_LEVEL[prev["type"]]
+        return True
+    # 普通压制
         # 含赖子的组合（对子/炸弹）：只接受同类王炸或更大炸弹
         if prev["type"] in BOMB_TYPES:
             if prev["type"] == new["type"]:
