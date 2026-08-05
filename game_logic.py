@@ -575,3 +575,10 @@ class GameSession:
         self.history = []
         self.round = None
         self.final_ranking = None
+
+    def continue_game(self):
+        """保留累计积分，开启新一局（不清零）。"""
+        self.round_no = 0
+        self.history = []
+        self.round = None
+        self.final_ranking = None
