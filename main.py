@@ -193,6 +193,17 @@ class Room:
         self.first_round_first_seat = self.dice_order[0]["seat"]
         return True
 
+    def continue_game(self) -> bool:
+        """保留累计积分继续新一大局（不清零）：GAME_END → DICE"""
+        if not self.game.is_over:
+            return False
+        self.game.continue_game()
+        self.started = True
+        self.state = STATE_DICE
+        self.dice_order = gl.roll_dice()
+        self.first_round_first_seat = self.dice_order[0]["seat"]
+        return True
+
     # ---- 回合定时器 ----
 
     def cancel_turn_timer(self):
@@ -573,6 +584,19 @@ async def handle_message(room: Room, seat: int, msg: Dict[str, Any]) -> Optional
                     await asyncio.sleep(2)
                     room.proceed_from_dice()
                     await broadcast(room, {"type": "notice", "message": "新一局开始！积分已清零"})
+                    await send_view(room)
+                    room.schedule_turn_timer()
+            return None
+        if mtype == "continue_game":
+            if seat != room.host_seat:
+                return {"type": "error", "message": "只有房主才能继续"}
+            async with room.lock:
+                if room.continue_game():
+                    await broadcast(room, {"type": "DICE", "data": room.dice_order})
+                    await send_view(room)
+                    await asyncio.sleep(2)
+                    room.proceed_from_dice()
+                    await broadcast(room, {"type": "notice", "message": "继续新一局！积分累计"})
                     await send_view(room)
                     room.schedule_turn_timer()
             return None

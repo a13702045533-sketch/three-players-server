@@ -569,9 +569,16 @@ class GameSession:
         return [{"seat": s, "score": self.scores[s]} for s in order]
 
     def reset(self):
-        """清空所有积分，开启全新 10 轮。"""
+        """清空所有积分，开启全新 3 轮。"""
         self.round_no = 0
         self.scores = {0: 0, 1: 0, 2: 0}
+        self.history = []
+        self.round = None
+        self.final_ranking = None
+
+    def continue_game(self):
+        """保留累计积分，开启新一大局（不清零）。"""
+        self.round_no = 0
         self.history = []
         self.round = None
         self.final_ranking = None
