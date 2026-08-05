@@ -68,7 +68,7 @@ class Room:
         self.code = code
         self.players: Dict[int, Player] = {}
         self.order: List[int] = []
-        self.game: gl.GameSession = gl.GameSession(total_rounds=10)
+        self.game: gl.GameSession = gl.GameSession(total_rounds=1)  # 升级版：一轮即一局
         self.started = False
 
         # ---- 状态机核心 ----
@@ -416,9 +416,12 @@ class Room:
         if self.game.is_over:
             self.state = STATE_GAME_END
             ranking = self.game.compute_ranking()
+            # 本轮结算结果（一局即一轮，history[-1] 就是本轮）
+            last_result = self.game.history[-1] if self.game.history else {}
             await broadcast(self, {"type": "GAME_OVER", "data": {
                 "ranking": ranking,
                 "scores": self.game.scores,
+                "round_result": last_result,
             }})
             await send_view(self)
             return
