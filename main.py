@@ -68,7 +68,7 @@ class Room:
         self.code = code
         self.players: Dict[int, Player] = {}
         self.order: List[int] = []
-        self.game: gl.GameSession = gl.GameSession(total_rounds=1)  # 升级版：一轮即一局
+        self.game: gl.GameSession = gl.GameSession(total_rounds=10)
         self.started = False
 
         # ---- 状态机核心 ----
@@ -189,17 +189,6 @@ class Room:
         self.started = True
         self.state = STATE_DICE
         # 随机先手（或重新掷骰）
-        self.dice_order = gl.roll_dice()
-        self.first_round_first_seat = self.dice_order[0]["seat"]
-        return True
-
-    def continue_game(self) -> bool:
-        """保留累计积分继续新一局（不清零）：GAME_END → DICE"""
-        if not self.game.is_over:
-            return False
-        self.game.continue_game()
-        self.started = True
-        self.state = STATE_DICE
         self.dice_order = gl.roll_dice()
         self.first_round_first_seat = self.dice_order[0]["seat"]
         return True
@@ -427,12 +416,9 @@ class Room:
         if self.game.is_over:
             self.state = STATE_GAME_END
             ranking = self.game.compute_ranking()
-            # 本轮结算结果（一局即一轮，history[-1] 就是本轮）
-            last_result = self.game.history[-1] if self.game.history else {}
             await broadcast(self, {"type": "GAME_OVER", "data": {
                 "ranking": ranking,
                 "scores": self.game.scores,
-                "round_result": last_result,
             }})
             await send_view(self)
             return
@@ -587,19 +573,6 @@ async def handle_message(room: Room, seat: int, msg: Dict[str, Any]) -> Optional
                     await asyncio.sleep(2)
                     room.proceed_from_dice()
                     await broadcast(room, {"type": "notice", "message": "新一局开始！积分已清零"})
-                    await send_view(room)
-                    room.schedule_turn_timer()
-            return None
-        if mtype == "continue_game":
-            if seat != room.host_seat:
-                return {"type": "error", "message": "只有房主才能继续"}
-            async with room.lock:
-                if room.continue_game():
-                    await broadcast(room, {"type": "DICE", "data": room.dice_order})
-                    await send_view(room)
-                    await asyncio.sleep(2)
-                    room.proceed_from_dice()
-                    await broadcast(room, {"type": "notice", "message": "继续新一局！积分累计"})
                     await send_view(room)
                     room.schedule_turn_timer()
             return None
