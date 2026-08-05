@@ -68,7 +68,7 @@ class Room:
         self.code = code
         self.players: Dict[int, Player] = {}
         self.order: List[int] = []
-        self.game: gl.GameSession = gl.GameSession(total_rounds=10)
+        self.game: gl.GameSession = gl.GameSession(total_rounds=3)
         self.started = False
 
         # ---- 状态机核心 ----

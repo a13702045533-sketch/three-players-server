@@ -523,7 +523,7 @@ class Round:
 class GameSession:
     """管理 10 小轮完整大局的进程、累计总分与全局结算。"""
 
-    def __init__(self, total_rounds: int = 10,
+    def __init__(self, total_rounds: int = 3,
                  shuffle: Optional[Callable[[List], None]] = None):
         self.total_rounds = total_rounds
         self.round_no = 0
